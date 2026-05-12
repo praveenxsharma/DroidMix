@@ -1,0 +1,14 @@
+# No external Python dependencies required!
+# All Python modules used in receiver.py are from the standard library.
+#
+# However, you DO need the following SYSTEM dependencies installed on your Linux PC:
+# - libpulse
+# - pipewire-pulse
+#
+# Arch Linux: sudo pacman -S libpulse pipewire-pulse
+# Ubuntu/Debian: sudo apt-get install libpulse0 pulseaudio-utils
+#
+# --- FOR WINDOWS USERS ONLY ---
+# You need to install PyAudio to play back the stream natively.
+# Run this in PowerShell:
+# pip install pyaudio

@@ -5,13 +5,23 @@ import subprocess
 import sys
 import signal
 import time
-import threading
+import platform
 import os
 
 SAMPLE_RATE = 48000
 CHANNELS = 1
 BIT_DEPTH = 16
 CHUNK_BYTES = 1024 * 4
+
+# Globals for Windows PyAudio
+IS_WINDOWS = platform.system() == "Windows"
+pyaudio = None
+if IS_WINDOWS:
+    try:
+        import pyaudio
+    except ImportError:
+        print("[error] PyAudio is required on Windows. Please install it with: pip install pyaudio")
+        sys.exit(1)
 
 def create_null_sink(name: str) -> int | None:
     cmd = [
@@ -57,25 +67,53 @@ class Receiver:
         self.port = port
         self.sink_name = sink_name
         self._running = False
+        
+        # Linux state
         self._module = None
         self._pacat = None
+        
+        # Windows state
+        self._pyaudio_instance = None
+        self._pyaudio_stream = None
 
     def start(self):
-        self._module = create_null_sink(self.sink_name)
-        if self._module is None:
-            sys.exit(1)
         self._running = True
-        self._pacat = start_pacat(self.sink_name)
+        
+        if IS_WINDOWS:
+            print("[audio] Initializing PyAudio for Windows playback...")
+            self._pyaudio_instance = pyaudio.PyAudio()
+            self._pyaudio_stream = self._pyaudio_instance.open(
+                format=pyaudio.paInt16,
+                channels=CHANNELS,
+                rate=SAMPLE_RATE,
+                output=True,
+                frames_per_buffer=CHUNK_BYTES // 2
+            )
+            print("[audio] Playback stream opened on default output device.")
+        else:
+            self._module = create_null_sink(self.sink_name)
+            if self._module is None:
+                sys.exit(1)
+            self._pacat = start_pacat(self.sink_name)
+            
         self._serve()
 
     def stop(self):
         self._running = False
-        if self._pacat:
-            if self._pacat.stdin:
-                self._pacat.stdin.close()
-            self._pacat.wait()
-        if self._module:
-            remove_null_sink(self._module)
+        
+        if IS_WINDOWS:
+            if self._pyaudio_stream:
+                self._pyaudio_stream.stop_stream()
+                self._pyaudio_stream.close()
+            if self._pyaudio_instance:
+                self._pyaudio_instance.terminate()
+        else:
+            if self._pacat:
+                if self._pacat.stdin:
+                    self._pacat.stdin.close()
+                self._pacat.wait()
+            if self._module:
+                remove_null_sink(self._module)
 
     def _serve(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -107,9 +145,15 @@ class Receiver:
                 data = conn.recv(CHUNK_BYTES)
                 if not data:
                     break
-                if self._pacat and self._pacat.poll() is None:
-                    self._pacat.stdin.write(data)
-                    self._pacat.stdin.flush()
+                    
+                if IS_WINDOWS:
+                    if self._pyaudio_stream:
+                        self._pyaudio_stream.write(data)
+                else:
+                    if self._pacat and self._pacat.poll() is None:
+                        self._pacat.stdin.write(data)
+                        self._pacat.stdin.flush()
+                        
                 bytes_rx += len(data)
 
                 t_now = time.monotonic()
@@ -120,6 +164,8 @@ class Receiver:
                     last_report = t_now
         except (ConnectionResetError, BrokenPipeError):
             pass
+        except Exception as e:
+            print(f"[tcp] Stream error: {e}")
         finally:
             conn.close()
 
@@ -127,7 +173,7 @@ def main():
     parser = argparse.ArgumentParser(description="DroidMix PC Receiver")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address")
     parser.add_argument("--port", default=9000, type=int, help="TCP port")
-    parser.add_argument("--device", default="PhoneMic", help="Virtual sink name")
+    parser.add_argument("--device", default="PhoneMic", help="Virtual sink name (Linux only)")
     args = parser.parse_args()
 
     receiver = Receiver(args.host, args.port, args.device)
